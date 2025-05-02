@@ -1,153 +1,108 @@
-# Sensor Fusion using Dempster-Shafer Theory for Object Classification
+# Sensor Fusion using Dempster-Shafer Theory with inD Dataset
 
-This package implements a sensor fusion system using Dempster-Shafer Theory (DST) for object classification based on the inD dataset. It simulates multiple virtual sensors (Camera, Radar, Lidar, Map) with realistic noise models, generates belief functions for object classification, and fuses them using various DST combination rules.
+This project implements a sensor fusion system using Dempster-Shafer Theory (DST) for object classification based on the [inD dataset](https://levelxdata.com/ind-dataset/). It simulates various sensors (Camera, Radar, Lidar, Map) with realistic noise models, generates Basic Belief Assignments (BBAs) from each sensor, fuses them using different combination rules (Dempster, Yager, PCR5), and performs classification based on the fused belief.
+
+**Version:** 1.5
 
 ## Features
 
-- **Core Dempster-Shafer Theory Implementation**:
-
-  - Basic Belief Assignment (BBA) representation
-  - Multiple combination rules: Dempster's rule, Yager's rule, PCR5
-  - Belief, plausibility, and pignistic probability calculations
-  - Classical and contextual discounting
-
-- **Realistic Sensor Simulation**:
-
-  - Camera sensor with Gaussian position noise
-  - Radar sensor with differential noise (better range, worse lateral accuracy)
-  - Lidar sensor with typical position noise
-  - Map sensor using actual Lanelet2 map data
-
-- **Classification and Evaluation**:
-
-  - Decision-making based on maximum belief, plausibility, or pignistic probability
-  - Performance metrics: accuracy, precision, recall, F1-score, confusion matrix
-
-- **Visualization**:
-  - Mass function visualization
-  - Belief-plausibility interval plots
-  - Performance comparison plots
+- **Dempster-Shafer Core:** Implements the `MassFunction` class with methods for combination (Dempster, Yager, PCR5), discounting, pignistic transformation, belief, and plausibility calculations.
+- **Virtual Sensors:**
+  - `CameraSensor`: Simulates classification based on distance and size, with Gaussian noise on position.
+  - `RadarSensor`: Simulates classification based on size and speed, distinguishing between vehicles and VRUs, with differential noise (range/lateral) on position and noise on velocity.
+  - `LidarSensor`: Simulates classification based on object dimensions (size, aspect ratio), with Gaussian noise on position.
+  - `MapSensor`: **Successfully integrates Lanelet2 map data!** Uses `LocalCartesianProjector` with the correct origin from recording metadata to determine context (e.g., driving lane, intersection) based on the object's position within the loaded map.
+- **Data Loading:** Modules to load recording metadata, track metadata, and track data from the inD dataset CSV files.
+- **Classification:** Implements decision-making based on pignistic transformation and calculates standard classification metrics (accuracy, precision, recall, F1-score, confusion matrix).
+- **Visualization:** Tools to plot mass functions, belief/plausibility intervals, and comparison of metrics across different combination rules.
+- **Command-Line Interface:** A `main.py` script to run experiments with configurable parameters (dataset path, recording ID, frames, results directory, plotting, verbosity).
+- **Configuration File:** A `config.ini` file for easier configuration of the inD dataset path.
 
 ## Installation
 
-### Prerequisites
+1. **Clone or download the package.**
+2. **Install required Python libraries:**
 
-- Python 3.6+
-- NumPy
-- Pandas
-- Matplotlib
-- Lanelet2 (for map data processing)
-
-### Setup
-
-1. Clone the repository:
-
-   ```
-   git clone https://github.com/yourusername/sensor_fusion_dst.git
-   cd sensor_fusion_dst
+   ```bash
+   pip install pandas numpy matplotlib tqdm scikit-learn
    ```
 
-2. Install dependencies:
+3. **Install Lanelet2:** Follow the official installation instructions for your system: [https://github.com/fzi-forschungszentrum-informatik/Lanelet2#installation](https://github.com/fzi-forschungszentrum-informatik/Lanelet2#installation)
+   - _Note:_ Ensure the Python bindings for Lanelet2 are correctly installed and accessible in your Python environment.
+4. **Download the inD dataset:** Obtain the dataset from [https://www.ind-dataset.com/](https://www.ind-dataset.com/) and place it in a known location (e.g., `/path/to/inD_dataset`).
+5. **Configure the dataset path:** Edit the `config.ini` file to specify the path to your inD dataset:
 
+   ```ini
+   [Paths]
+   # Specify the root path to your downloaded inD dataset
+   dataset_path = /path/to/inD_dataset
    ```
-   pip install numpy pandas matplotlib lanelet2
-   ```
-
-3. Prepare the inD dataset:
-   - Download the inD dataset from [https://www.ind-dataset.com/](https://www.ind-dataset.com/)
-   - Extract the dataset to a known location
 
 ## Usage
 
-### Basic Usage
-
-```python
-from dst_core.basic import MassFunction
-from sensors.virtual_sensors import CameraSensor, RadarSensor, LidarSensor, MapSensor
-from classification import make_decision
-import lanelet2
-
-# Define frame of discernment
-frame = {"car", "truck_bus", "bicycle", "pedestrian", "unknown"}
-
-# Create sensors
-camera = CameraSensor(frame, reliability=0.9, position=(0, 0), position_noise_std_dev=0.5)
-radar = RadarSensor(frame, reliability=0.8, position=(0, 0),
-                   range_noise_std_dev=0.3, lateral_noise_std_dev=1.0, velocity_noise_std_dev=0.2)
-lidar = LidarSensor(frame, reliability=0.85, position=(0, 0), position_noise_std_dev=0.2)
-map_sensor = MapSensor(frame, reliability=0.7)
-
-# Load Lanelet2 map
-projector = lanelet2.projection.UtmProjector(lanelet2.io.Origin(49.0, 8.0))
-lanelet_map = lanelet2.io.load("path/to/map.osm", projector)
-
-# Generate BBAs from sensors
-camera_bba = camera.generate_classification_bba(track_data, track_meta)
-radar_bba = radar.generate_classification_bba(track_data, track_meta)
-lidar_bba = lidar.generate_classification_bba(track_data, track_meta)
-map_bba = map_sensor.generate_classification_bba(track_data, track_meta,
-                                               lanelet_map=lanelet_map, projector=projector)
-
-# Combine BBAs using Dempster's rule
-fused_bba = camera_bba.combine_dempster(radar_bba).combine_dempster(lidar_bba).combine_dempster(map_bba)
-
-# Make decision based on maximum pignistic probability
-decision = make_decision(fused_bba, method="max_pignistic")
-```
-
-### Running the Main Experiment
+Run the main script `main.py` from the `sensor_fusion_dst` directory:
 
 ```bash
-python main.py --dataset_path /path/to/inD-dataset --recording_id 1 --num_frames 50 --frame_step 10
+python main.py --recording_id <id> [options]
 ```
 
-## Package Structure
+**Arguments:**
 
-- `dst_core/`: Core Dempster-Shafer Theory implementation
-  - `basic.py`: Basic belief functions, combination rules, and decision support
-- `data_loader/`: Data loading utilities for the inD dataset
-  - `loader.py`: Functions to load and process inD dataset files
-- `sensors/`: Virtual sensor implementations
-  - `virtual_sensors.py`: Camera, Radar, Lidar, and Map sensor simulations
-- `visualization/`: Visualization tools
-  - `plotter.py`: Functions for plotting mass functions and belief-plausibility intervals
-- `classification.py`: Decision-making and evaluation metrics
-- `main.py`: Main experiment script
+- `--dataset_path`: Path to the root directory of the inD dataset (overrides the path in `config.ini`).
+- `--recording_id`: The ID of the recording to process (e.g., 1, 2, ... default: 1).
+- `--num_frames`: Number of frames to process from the start of the recording (default: 50).
+- `--frame_step`: Step size between processed frames (default: 10).
+- `--results_dir`: Directory to save output plots (default: `/home/ubuntu/results_v1.5`).
+- `--plot`: Generate and save plots (mass functions, belief/plausibility, metrics comparison).
+- `-v`, `--verbose`: Increase output verbosity (use `-vv` for more detail).
+- `-q`, `--quiet`: Suppress progress bar and verbose output.
 
-## Sensor Models
+**Example:**
 
-### Camera Sensor
+```bash
+python main.py --recording_id 10 --num_frames 100 --frame_step 5 --results_dir ./results_recording10 --plot -v
+```
 
-- Adds Gaussian noise to position measurements
-- Classification confidence decreases with distance and for smaller objects
-- Higher confidence for cars/trucks, potential confusion between bicycles/pedestrians
+This command will process recording 10 using the dataset path from `config.ini`, analyzing 100 frames with a step of 5, saving plots to `./results_recording10`, and providing verbose output.
 
-### Radar Sensor
+## Project Structure
 
-- Adds differential noise to position (better range accuracy, poorer lateral accuracy)
-- Adds noise to velocity measurements
-- Limited classification ability, mainly distinguishes between vehicles and VRUs
+```
+sensor_fusion_dst/
+├── data_loader/          # Modules for loading inD data
+│   ├── __init__.py
+│   └── loader.py
+├── dst_core/             # Core Dempster-Shafer implementation
+│   ├── __init__.py
+│   └── basic.py
+├── sensors/              # Virtual sensor implementations
+│   ├── __init__.py
+│   └── virtual_sensors.py
+├── visualization/        # Plotting utilities
+│   ├── __init__.py
+│   └── plotter.py
+├── __init__.py
+├── classification.py     # Classification logic and metrics
+├── main.py               # Main executable script
+├── config.ini            # Configuration file for dataset path
+├── README.md             # This file
+└── CHANGE.md             # Changelog
+```
 
-### Lidar Sensor
+## Expanded Testing Results
 
-- Adds typical lidar noise to position measurements
-- Classification based on size and shape
-- Moderate classification ability
+The system has been tested on multiple recordings (10, 20, 30) from the inD dataset to evaluate performance across different scenarios:
 
-### Map Sensor
+- **Recording 10:** Achieved 0.864 accuracy with all combination rules. Only 'road' lanelet subtypes were encountered.
+- **Recording 20:** Achieved perfect 1.0 accuracy despite encountering 'walkway' lanelet subtypes (flagged as unknown).
+- **Recording 30:** Also achieved perfect 1.0 accuracy with 'walkway' lanelet subtypes present.
 
-- Uses Lanelet2 map data to determine the context (road, sidewalk, bicycle lane, etc.)
-- Assigns belief based on typical road usage patterns for each context
+The variation in accuracy and the system's resilience to unknown lanelet subtypes demonstrate both the importance of diverse scenario testing and the robustness of the sensor fusion approach. See the full documentation for detailed analysis.
 
-## Results
+## Notes
 
-The system was tested on the inD dataset with different combination rules (Dempster, Yager, PCR5). Results show high classification accuracy, with detailed performance metrics available in the `/results` directory after running the experiment.
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Acknowledgments
-
-- The inD dataset: [https://levelxdata.com/ind-dataset/](https://levelxdata.com/ind-dataset/)
-- Lanelet2: [https://github.com/fzi-forschungszentrum-informatik/Lanelet2](https://github.com/fzi-forschungszentrum-informatik/Lanelet2)
+- The `MapSensor` successfully uses Lanelet2 data. It determines the map origin (latitude, longitude) from the recording metadata and uses `LocalCartesianProjector`.
+- The frame of discernment is currently fixed to `{"car", "van", "truck_bus", "pedestrian", "bicycle"}`. Other classes from the dataset are ignored.
+- Sensor parameters (reliability, noise levels) are currently hardcoded in `main.py` but could be made configurable.
+- The Lanelet2 map loading uses `loadRobust` to handle potential errors in the `.osm` files.
+- The system currently flags 'walkway' lanelet subtypes as unknown. Future versions could extend the `MapSensor` to handle more lanelet subtypes explicitly.

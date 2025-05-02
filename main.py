@@ -1,404 +1,397 @@
 """
-Main script for testing and evaluating the Dempster-Shafer sensor fusion system.
-
-This script loads data from the inD dataset, simulates virtual sensors,
-fuses their outputs using different combination rules, and evaluates
-the classification performance.
-
-Version 1.1: Updated to use Lanelet2 map data and realistic sensor noise models.
+Main script for testing and running the sensor fusion classification task.
 """
-
 import os
-import sys
 import argparse
-import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-from typing import Dict, List, Tuple, Set, Optional, Any
+import numpy as np
+import time
+from tqdm import tqdm
+import sys
+import configparser # Import configparser
 
-# Import modules from this package
-from dst_core.basic import MassFunction
-from data_loader.loader import (
-    load_recording_meta, load_tracks_meta, load_tracks,
-    get_track_data_by_frame, get_track_class
-)
-from sensors.virtual_sensors import (
-    CameraSensor, RadarSensor, LidarSensor, MapSensor, LANELET2_AVAILABLE
-)
-from classification import (
-    make_decision, calculate_accuracy, calculate_confusion_matrix,
-    calculate_precision_recall_f1
-)
-from visualization.plotter import (
-    plot_mass_function, plot_belief_plausibility
-)
-
-# Import Lanelet2 if available
+# Try importing Lanelet2
+LANELET2_AVAILABLE = False
 try:
     import lanelet2
-    from lanelet2.projection import UtmProjector
-    from lanelet2.io import Origin, load
+    from lanelet2.projection import LocalCartesianProjector
+    from lanelet2.io import Origin
+    LANELET2_AVAILABLE = True
+    print("Lanelet2 library found and imported successfully.")
 except ImportError:
     print("Warning: Lanelet2 library not found. MapSensor will use simplified logic.")
+    # Define dummy classes if lanelet2 is not available to avoid NameErrors later
+    class Origin:
+        pass
+    class LocalCartesianProjector:
+        pass
 
+# Add project root to Python path
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(PROJECT_ROOT)
 
-def run_experiment(
-    dataset_path: str,
-    recording_id: int,
-    num_frames: int = 50,
-    frame_step: int = 10,
-    combination_rule: str = "dempster",
-    decision_method: str = "max_pignistic",
-    results_dir: str = "/home/godwin/Downloads/sensor_fusion_dst_package_v1.1/results",
-    save_plots: bool = True,
-    verbose: bool = True
-) -> Tuple[float, Dict[str, float]]:
-    """
-    Run the sensor fusion experiment on a specific recording.
-    
-    Args:
-        dataset_path: Path to the inD dataset directory
-        recording_id: ID of the recording to process
-        num_frames: Number of frames to process
-        frame_step: Step size for frame processing (e.g., 10 means process every 10th frame)
-        combination_rule: Which combination rule to use ('dempster', 'yager', or 'pcr5')
-        decision_method: Decision method ('max_bel', 'max_pl', or 'max_pignistic')
-        results_dir: Directory to save results
-        save_plots: Whether to save plots
-        verbose: Whether to print progress information
-        
-    Returns:
-        Tuple of (accuracy, detailed_metrics_dict)
-    """
-    # Create results directory if it doesn't exist
-    os.makedirs(results_dir, exist_ok=True)
-    
-    # Format recording ID as a string with leading zero if needed
-    recording_id_str = f"{recording_id:02d}"
-    
-    # Load data
-    if verbose:
-        print(f"Loading data for recording {recording_id_str}...")
-    
-    recording_meta = load_recording_meta(
-        os.path.join(dataset_path, "data"), recording_id
-    )
-    tracks_meta = load_tracks_meta(
-        os.path.join(dataset_path, "data"), recording_id
-    )
-    tracks = load_tracks(
-        os.path.join(dataset_path, "data"), recording_id
-    )
-    
-    # Load Lanelet2 map if available
+# Correctly import functions from data_loader
+from data_loader.loader import load_recording_meta, load_tracks_meta, load_tracks, get_track_data_by_frame
+from sensors.virtual_sensors import CameraSensor, RadarSensor, LidarSensor, MapSensor
+from dst_core.basic import MassFunction
+# Import individual metric functions from classification
+from classification import calculate_accuracy, calculate_confusion_matrix, calculate_precision_recall_f1
+# Import correct visualization function names
+from visualization.plotter import plot_mass_function, plot_belief_plausibility, plot_metrics_comparison
+
+# Define the frame of discernment (possible classes)
+FRAME_OF_DISCERNMENT = {"car", "van", "truck_bus", "pedestrian", "bicycle"}
+
+# --- Configuration --- #
+CONFIG_FILE = os.path.join(PROJECT_ROOT, "config.ini")
+DEFAULT_DATASET_PATH = "" # Default path if not in CLI or config
+DEFAULT_RESULTS_DIR = "" # Default results path
+
+def get_dataset_path(cli_path):
+    """Determine the dataset path based on CLI, config file, and default."""
+    config = configparser.ConfigParser()
+    config_path = None
+    if os.path.exists(CONFIG_FILE):
+        try:
+            config.read(CONFIG_FILE)
+            if 'Paths' in config and 'dataset_path' in config['Paths']:
+                config_path = config['Paths']['dataset_path']
+        except configparser.Error as e:
+            print(f"Warning: Error reading config file {CONFIG_FILE}: {e}")
+
+    # Priority: CLI > Config File > Default
+    if cli_path and cli_path != DEFAULT_DATASET_PATH: # If CLI path is provided and not the default
+        print(f"Using dataset path from command line: {cli_path}")
+        return cli_path
+    elif config_path:
+        print(f"Using dataset path from config file ({CONFIG_FILE}): {config_path}")
+        return config_path
+    else:
+        print(f"Using default dataset path: {DEFAULT_DATASET_PATH}")
+        return DEFAULT_DATASET_PATH
+
+# Define helper functions for combining BBAs using different rules
+def combine_bba_list_dempster(bba_list):
+    """Combine a list of BBAs using Dempster's rule."""
+    if not bba_list:
+        return None
+    result = bba_list[0]
+    for i in range(1, len(bba_list)):
+        try:
+            result = result.combine_dempster(bba_list[i])
+        except ValueError as e:
+            # Handle complete conflict by returning None or a vacuous BBA
+            print(f"Warning: Complete conflict detected during Dempster combination: {e}")
+            # Option 1: Return None (indicates failure to combine)
+            # return None
+            # Option 2: Return a vacuous BBA (total uncertainty)
+            return MassFunction(result.frame, {result.frame: 1.0})
+    return result
+
+def combine_bba_list_yager(bba_list):
+    """Combine a list of BBAs using Yager's rule."""
+    if not bba_list:
+        return None
+    result = bba_list[0]
+    for i in range(1, len(bba_list)):
+        result = result.combine_yager(bba_list[i])
+    return result
+
+def combine_bba_list_pcr5(bba_list):
+    """Combine a list of BBAs using PCR5 rule."""
+    if not bba_list:
+        return None
+    result = bba_list[0]
+    for i in range(1, len(bba_list)):
+        result = result.combine_pcr5(bba_list[i])
+    return result
+
+def bba_to_decision(bba):
+    """Convert a BBA to a decision using pignistic transformation."""
+    if bba is None: # Handle case where combination failed
+        return None, 0.0
+    pignistic = bba.pignistic_transformation()
+    if not pignistic:
+        return None, 0.0
+    # Find the class with highest pignistic probability
+    best_class = max(pignistic.items(), key=lambda x: x[1])
+    return best_class[0], best_class[1]  # Return (class, confidence)
+
+def main(args):
+    """Main function to run the sensor fusion experiment."""
+    start_time = time.time()
+
+    # --- Determine Dataset Path --- #
+    dataset_path = get_dataset_path(args.dataset_path)
+
+    # --- 1. Load Data --- #
+    if args.verbose:
+        print(f"Loading data for recording {args.recording_id} from {dataset_path}...")
+
+    try:
+        # Construct data path
+        data_dir = os.path.join(dataset_path, "data")
+
+        # Load individual data components
+        recording_meta = load_recording_meta(data_dir, args.recording_id)
+        tracks_meta = load_tracks_meta(data_dir, args.recording_id)
+        tracks = load_tracks(data_dir, args.recording_id)
+
+        if tracks is None or tracks_meta is None or recording_meta is None:
+            print(f"Error: Could not load all required data components for recording {args.recording_id}. Exiting.")
+            return
+
+        location_id = recording_meta["locationId"] # Access directly from Series
+        if args.verbose:
+            print(f"Data loaded successfully. Location ID: {location_id}")
+    except Exception as e:
+        print(f"Error loading data: {e}")
+        import traceback
+        traceback.print_exc()
+        return
+
+    # --- 2. Load Lanelet2 Map (if available) --- #
     lanelet_map = None
     projector = None
     if LANELET2_AVAILABLE:
-        try:
-            # Find the map file for this recording
-            location_id = recording_meta.get("locationId", 1)
-            map_file = os.path.join(dataset_path, "maps", f"location_{location_id}.osm")
-            
+        # Construct map file path based on location ID
+        location_name_map = {
+            1: "01_bendplatz",
+            2: "02_frankenburg",
+            3: "03_heckstrasse",
+            4: "04_aseag"
+        }
+        location_folder_name = location_name_map.get(location_id)
+
+        if location_folder_name:
+            map_filename = f"location{location_id}.osm"
+            # Use the determined dataset_path here
+            map_file = os.path.join(dataset_path, "maps", "lanelets", location_folder_name, map_filename)
+            if args.verbose:
+                print(f"Attempting to load Lanelet2 map: {map_file}")
+
             if os.path.exists(map_file):
-                # Get UTM origin from recording metadata
-                utm_origin_x = recording_meta.get("xUtmOrigin", 0)
-                utm_origin_y = recording_meta.get("yUtmOrigin", 0)
-                
-                # Create projector with origin
-                projector = UtmProjector(Origin(utm_origin_x, utm_origin_y))
-                
-                # Load the map
-                lanelet_map = load(map_file, projector)
-                
-                if verbose:
-                    print(f"Loaded Lanelet2 map from {map_file}")
+                try:
+                    origin_lat = recording_meta["latLocation"]
+                    origin_lon = recording_meta["lonLocation"]
+                    if args.verbose:
+                        print(f"Using LocalCartesianProjector with Origin(lat={origin_lat}, lon={origin_lon})")
+
+                    origin = Origin(origin_lat, origin_lon)
+                    projector = LocalCartesianProjector(origin)
+
+                    lanelet_map, load_errors = lanelet2.io.loadRobust(map_file, projector)
+                    if load_errors:
+                        print("Warning: Errors encountered during Lanelet2 map loading:")
+                        for error in load_errors:
+                            print(f"- {error}")
+                        lanelet_map = None
+                        projector = None
+                    else:
+                        if args.verbose:
+                            print("Lanelet2 map loaded successfully.")
+
+                except Exception as e:
+                    print(f"Error loading Lanelet2 map: {e}. MapSensor will use simplified logic.")
+                    lanelet_map = None
+                    projector = None
             else:
-                print(f"Warning: Map file {map_file} not found. MapSensor will use simplified logic.")
-        except Exception as e:
-            print(f"Error loading Lanelet2 map: {e}")
-            print("MapSensor will use simplified logic.")
-    
-    # Define frame of discernment
-    frame = {"car", "truck_bus", "bicycle", "pedestrian", "unknown"}
-    
-    # Create sensors with realistic noise models
-    # Position sensors at the origin for simplicity
-    camera = CameraSensor(frame, reliability=0.9, position=(0, 0), position_noise_std_dev=0.5)
-    radar = RadarSensor(frame, reliability=0.8, position=(0, 0), 
-                       range_noise_std_dev=0.3, lateral_noise_std_dev=1.0, velocity_noise_std_dev=0.2)
-    lidar = LidarSensor(frame, reliability=0.85, position=(0, 0), position_noise_std_dev=0.2)
-    map_sensor = MapSensor(frame, reliability=0.7)
-    
-    # Determine frames to process
-    unique_frames = sorted(tracks["frame"].unique())
-    frames_to_process = unique_frames[:num_frames*frame_step:frame_step]
-    
-    # Initialize results storage
-    predictions = []
-    ground_truths = []
-    
-    # Process each frame
-    for i, frame_id in enumerate(frames_to_process):
-        if verbose and (i % 10 == 0 or i == len(frames_to_process) - 1):
-            print(f"Processing frame {frame_id} ({i+1}/{len(frames_to_process)})")
-        
-        # Get track IDs present in this frame
-        track_ids = tracks[tracks["frame"] == frame_id]["trackId"].unique()
-        
-        # Process each track
-        for track_id in track_ids:
-            # Get track data for this frame
-            track_data = get_track_data_by_frame(tracks, track_id, frame_id)
-            if track_data is None:
-                continue
-                
-            # Get track metadata using track_id as index
+                print(f"Warning: Lanelet2 map file not found: {map_file}. MapSensor will use simplified logic.")
+        else:
+            print(f"Warning: Unknown location ID {location_id} for Lanelet2 map path. MapSensor will use simplified logic.")
+    else:
+        if args.verbose:
+            print("Lanelet2 library not available. Skipping map loading.")
+
+    # --- 3. Initialize Sensors --- #
+    # Updated parameter names to match the class definitions
+    camera = CameraSensor(frame_of_discernment=FRAME_OF_DISCERNMENT, position_noise_std_dev=0.5)
+    radar = RadarSensor(frame_of_discernment=FRAME_OF_DISCERNMENT, range_noise_std_dev=0.2, lateral_noise_std_dev=1.0, velocity_noise_std_dev=0.3)
+    lidar = LidarSensor(frame_of_discernment=FRAME_OF_DISCERNMENT, position_noise_std_dev=0.3)
+    map_sensor = MapSensor(frame_of_discernment=FRAME_OF_DISCERNMENT, reliability=0.7)
+
+    sensors = [camera, radar, lidar, map_sensor]
+
+    # --- 4. Process Frames --- #
+    results = {
+        "dempster": {"predictions": [], "true_labels": [], "confidences": []},
+        "yager": {"predictions": [], "true_labels": [], "confidences": []},
+        "pcr5": {"predictions": [], "true_labels": [], "confidences": []}
+    }
+    processed_frames = 0
+
+    start_frame = tracks["frame"].min()
+    end_frame = tracks["frame"].max()
+    target_frames = list(range(start_frame, min(end_frame + 1, start_frame + args.num_frames * args.frame_step), args.frame_step))
+
+    if args.verbose:
+        print(f"Processing {len(target_frames)} frames (from {start_frame} to {target_frames[-1]} with step {args.frame_step})...")
+
+    frame_iterator = tqdm(target_frames, desc="Processing Frames", disable=args.quiet)
+
+    for frame_num in frame_iterator:
+        # Get all data for the current frame
+        frame_tracks_data = tracks[tracks["frame"] == frame_num]
+        if frame_tracks_data.empty:
+            continue
+
+        processed_tracks_in_frame = 0
+        for track_id in frame_tracks_data["trackId"].unique():
+            # Get the specific point for this track in this frame
+            track_point = frame_tracks_data[frame_tracks_data["trackId"] == track_id].iloc[0]
+
             try:
                 track_meta = tracks_meta.loc[track_id]
             except KeyError:
-                if verbose:
-                    print(f"Warning: Track ID {track_id} not found in tracks_meta. Skipping.")
+                 if args.verbose > 1:
+                    print(f"Frame {frame_num}, Track {track_id}: Metadata not found using .loc, skipping.")
+                 continue
+
+            true_label = track_meta["class"]
+
+            if true_label not in FRAME_OF_DISCERNMENT:
+                if args.verbose > 1:
+                    print(f"Frame {frame_num}, Track {track_id}: True label ", true_label, " not in Frame of Discernment, skipping.")
                 continue
-            
-            # Generate BBAs from each sensor
-            camera_bba = camera.generate_classification_bba(track_data, track_meta)
-            radar_bba = radar.generate_classification_bba(track_data, track_meta)
-            lidar_bba = lidar.generate_classification_bba(track_data, track_meta)
-            map_bba = map_sensor.generate_classification_bba(
-                track_data, track_meta, lanelet_map=lanelet_map, projector=projector
-            )
-            
-            # Save example plots for the first few tracks in the first frame
-            if save_plots and frame_id == frames_to_process[0] and track_id < 5:
-                plot_mass_function(
-                    camera_bba, 
-                    title=f"Camera BBA - Track {track_id}",
-                    save_path=os.path.join(results_dir, f"camera_bba_track{track_id}_frame{frame_id}.png")
-                )
-                plot_mass_function(
-                    radar_bba, 
-                    title=f"Radar BBA - Track {track_id}",
-                    save_path=os.path.join(results_dir, f"radar_bba_track{track_id}_frame{frame_id}.png")
-                )
-                plot_mass_function(
-                    lidar_bba, 
-                    title=f"Lidar BBA - Track {track_id}",
-                    save_path=os.path.join(results_dir, f"lidar_bba_track{track_id}_frame{frame_id}.png")
-                )
-                plot_mass_function(
-                    map_bba, 
-                    title=f"Map BBA - Track {track_id}",
-                    save_path=os.path.join(results_dir, f"map_bba_track{track_id}_frame{frame_id}.png")
-                )
-            
-            # Combine BBAs using the specified rule
-            if combination_rule == "dempster":
-                fused_bba = camera_bba.combine_dempster(radar_bba).combine_dempster(lidar_bba).combine_dempster(map_bba)
-            elif combination_rule == "yager":
-                fused_bba = camera_bba.combine_yager(radar_bba).combine_yager(lidar_bba).combine_yager(map_bba)
-            elif combination_rule == "pcr5":
-                fused_bba = camera_bba.combine_pcr5(radar_bba).combine_pcr5(lidar_bba).combine_pcr5(map_bba)
-            else:
-                raise ValueError(f"Unknown combination rule: {combination_rule}")
-            
-            # Save example plots for the first few tracks in the first frame
-            if save_plots and frame_id == frames_to_process[0] and track_id < 5:
-                plot_mass_function(
-                    fused_bba, 
-                    title=f"Fused BBA ({combination_rule}) - Track {track_id}",
-                    save_path=os.path.join(results_dir, f"fused_bba_{combination_rule}_track{track_id}_frame{frame_id}.png")
-                )
-                plot_belief_plausibility(
-                    fused_bba, 
-                    title=f"Belief/Plausibility ({combination_rule}) - Track {track_id}",
-                    save_path=os.path.join(results_dir, f"bel_pl_{combination_rule}_track{track_id}_frame{frame_id}.png")
-                )
-            
-            # Make decision
-            predicted_class = make_decision(fused_bba, method=decision_method)
-            
-            # Get ground truth
-            true_class = track_meta["class"]
-            
-            # Store results
-            predictions.append(predicted_class)
-            ground_truths.append(true_class)
-    
-    # Calculate metrics
-    all_labels = list(frame) # Get labels from the frame of discernment
-    accuracy = calculate_accuracy(predictions, ground_truths)
-    confusion_mat = calculate_confusion_matrix(predictions, ground_truths, labels=all_labels)
-    metrics = calculate_precision_recall_f1(confusion_mat)
-    
-    # Save results
-    pd.DataFrame({
-        "predicted": predictions,
-        "ground_truth": ground_truths
-    }).to_csv(os.path.join(results_dir, f"predictions_{combination_rule}.csv"), index=False)
-    
-    pd.DataFrame(confusion_mat).to_csv(
-        os.path.join(results_dir, f"confusion_matrix_{combination_rule}.csv")
-    )
-    
-    pd.DataFrame(metrics).to_csv(
-        os.path.join(results_dir, f"performance_metrics_{combination_rule}.csv")
-    )
-    
-    if verbose:
-        print(f"\nResults for {combination_rule} rule:")
+
+            bba_list = []
+            for sensor in sensors:
+                sensor_kwargs = {}
+                if isinstance(sensor, MapSensor):
+                    sensor_kwargs["lanelet_map"] = lanelet_map
+                    sensor_kwargs["projector"] = projector
+                sensor_kwargs["track_meta"] = track_meta
+
+                # Call generate_classification_bba with track_point and kwargs
+                bba = sensor.generate_classification_bba(track_point, **sensor_kwargs)
+                if bba:
+                    bba_list.append(bba)
+
+            if not bba_list:
+                if args.verbose > 1:
+                    print(f"Frame {frame_num}, Track {track_id}: No BBAs generated, skipping.")
+                continue
+
+            try:
+                fused_bba_dempster = combine_bba_list_dempster(bba_list)
+                fused_bba_yager = combine_bba_list_yager(bba_list)
+                fused_bba_pcr5 = combine_bba_list_pcr5(bba_list)
+            except Exception as e:
+                print(f"\nError during BBA combination for Frame {frame_num}, Track {track_id}: {e}")
+                if args.verbose > 1:
+                    print("BBAs:", bba_list)
+                continue
+
+            pred_dempster, conf_dempster = bba_to_decision(fused_bba_dempster)
+            pred_yager, conf_yager = bba_to_decision(fused_bba_yager)
+            pred_pcr5, conf_pcr5 = bba_to_decision(fused_bba_pcr5)
+
+            # Only record results if a decision was made
+            if pred_dempster is not None:
+                results["dempster"]["predictions"].append(pred_dempster)
+                results["dempster"]["true_labels"].append(true_label)
+                results["dempster"]["confidences"].append(conf_dempster)
+
+            if pred_yager is not None:
+                results["yager"]["predictions"].append(pred_yager)
+                results["yager"]["true_labels"].append(true_label)
+                results["yager"]["confidences"].append(conf_yager)
+
+            if pred_pcr5 is not None:
+                results["pcr5"]["predictions"].append(pred_pcr5)
+                results["pcr5"]["true_labels"].append(true_label)
+                results["pcr5"]["confidences"].append(conf_pcr5)
+
+            processed_tracks_in_frame += 1
+
+            if processed_frames == 0 and processed_tracks_in_frame == 1 and args.plot:
+                if not os.path.exists(args.results_dir):
+                    os.makedirs(args.results_dir)
+                if args.verbose:
+                    print(f"Plotting results for Frame {frame_num}, Track {track_id}...")
+                for i, bba in enumerate(bba_list):
+                    sensor_name = sensors[i].__class__.__name__
+                    # Use correct function name: plot_mass_function
+                    plot_mass_function(bba, f"{sensor_name} BBA (F{frame_num}, T{track_id})", os.path.join(args.results_dir, f"sensor_{sensor_name}_f{frame_num}_t{track_id}.png"))
+                if fused_bba_dempster:
+                    # Use correct function name: plot_mass_function
+                    plot_mass_function(fused_bba_dempster, f"Fused BBA (Dempster) (F{frame_num}, T{track_id})", os.path.join(args.results_dir, f"fused_bba_dempster_f{frame_num}_t{track_id}.png"))
+                    # Use correct function name: plot_belief_plausibility
+                    plot_belief_plausibility(fused_bba_dempster, title=f"Bel/Pl (Dempster) (F{frame_num}, T{track_id})", save_path=os.path.join(args.results_dir, f"bel_pl_dempster_f{frame_num}_t{track_id}.png"))
+                if fused_bba_yager:
+                    # Use correct function name: plot_mass_function
+                    plot_mass_function(fused_bba_yager, f"Fused BBA (Yager) (F{frame_num}, T{track_id})", os.path.join(args.results_dir, f"fused_bba_yager_f{frame_num}_t{track_id}.png"))
+                    # Use correct function name: plot_belief_plausibility
+                    plot_belief_plausibility(fused_bba_yager, title=f"Bel/Pl (Yager) (F{frame_num}, T{track_id})", save_path=os.path.join(args.results_dir, f"bel_pl_yager_f{frame_num}_t{track_id}.png"))
+                if fused_bba_pcr5:
+                    # Use correct function name: plot_mass_function
+                    plot_mass_function(fused_bba_pcr5, f"Fused BBA (PCR5) (F{frame_num}, T{track_id})", os.path.join(args.results_dir, f"fused_bba_pcr5_f{frame_num}_t{track_id}.png"))
+                    # Use correct function name: plot_belief_plausibility
+                    plot_belief_plausibility(fused_bba_pcr5, title=f"Bel/Pl (PCR5) (F{frame_num}, T{track_id})", save_path=os.path.join(args.results_dir, f"bel_pl_pcr5_f{frame_num}_t{track_id}.png"))
+
+        if processed_tracks_in_frame > 0:
+            processed_frames += 1
+
+    if not results["dempster"]["true_labels"]:
+        print("\nNo tracks processed or no valid labels found. Cannot calculate metrics.")
+        return
+
+    all_metrics = {}
+    labels = sorted(list(FRAME_OF_DISCERNMENT))
+    print("\n--- Evaluation Metrics ---")
+    for rule in results:
+        print(f"\nCombination Rule: {rule.capitalize()}")
+        true_labels = results[rule]["true_labels"]
+        predictions = results[rule]["predictions"]
+
+        if not true_labels or not predictions:
+            print("No predictions made for this rule, skipping metrics.")
+            continue
+
+        # Calculate individual metrics using imported functions
+        accuracy = calculate_accuracy(predictions, true_labels)
+        conf_matrix = calculate_confusion_matrix(predictions, true_labels, labels)
+        perf_metrics = calculate_precision_recall_f1(conf_matrix)
+
+        # Store metrics for comparison plot
+        all_metrics[rule] = {
+            'accuracy': accuracy,
+            'precision_macro': perf_metrics.loc['Macro Avg', 'Precision'],
+            'recall_macro': perf_metrics.loc['Macro Avg', 'Recall'],
+            'f1_macro': perf_metrics.loc['Macro Avg', 'F1-Score'],
+            'report': perf_metrics.to_string() # Store the DataFrame as string for verbose output
+        }
+
         print(f"Accuracy: {accuracy:.4f}")
-        print("Confusion Matrix:")
-        print(pd.DataFrame(confusion_mat))
-        print("\nPerformance Metrics:")
-        print(pd.DataFrame(metrics))
-    
-    return accuracy, metrics
+        print(f"Precision (Macro Avg): {perf_metrics.loc['Macro Avg', 'Precision']:.4f}")
+        print(f"Recall (Macro Avg): {perf_metrics.loc['Macro Avg', 'Recall']:.4f}")
+        print(f"F1-Score (Macro Avg): {perf_metrics.loc['Macro Avg', 'F1-Score']:.4f}")
+        if args.verbose:
+            print("Classification Report (Per Class):")
+            print(perf_metrics.drop('Macro Avg').to_string())
+            print("\n Confusion Matrix:")
+            print(conf_matrix.to_string())
 
+    if args.plot and all_metrics:
+        if not os.path.exists(args.results_dir):
+            os.makedirs(args.results_dir)
+        plot_metrics_comparison(all_metrics, os.path.join(args.results_dir, "combination_rules_comparison.png"))
 
-def compare_combination_rules(
-    dataset_path: str,
-    recording_id: int,
-    num_frames: int = 50,
-    frame_step: int = 10,
-    decision_method: str = "max_pignistic",
-    results_dir: str = "/home/godwin/results",
-    save_plots: bool = True,
-    verbose: bool = True
-) -> None:
-    """
-    Compare different combination rules on the same dataset.
-    
-    Args:
-        dataset_path: Path to the inD dataset directory
-        recording_id: ID of the recording to process
-        num_frames: Number of frames to process
-        frame_step: Step size for frame processing
-        decision_method: Decision method
-        results_dir: Directory to save results
-        save_plots: Whether to save plots
-        verbose: Whether to print progress information
-    """
-    # Create results directory if it doesn't exist
-    os.makedirs(results_dir, exist_ok=True)
-    
-    # Run experiments with different combination rules
-    results = {}
-    
-    if verbose:
-        print("=== Testing Dempster's combination rule ===")
-    accuracy_dempster, metrics_dempster = run_experiment(
-        dataset_path, recording_id, num_frames, frame_step,
-        combination_rule="dempster", decision_method=decision_method,
-        results_dir=results_dir, save_plots=save_plots, verbose=verbose
-    )
-    results["dempster"] = {
-        "accuracy": accuracy_dempster,
-        "precision_macro": metrics_dempster.loc["Macro Avg", "Precision"],
-        "recall_macro": metrics_dempster.loc["Macro Avg", "Recall"],
-        "f1_macro": metrics_dempster.loc["Macro Avg", "F1-Score"]
-    }
-    
-    if verbose:
-        print("\n=== Testing Yager's combination rule ===")
-    accuracy_yager, metrics_yager = run_experiment(
-        dataset_path, recording_id, num_frames, frame_step,
-        combination_rule="yager", decision_method=decision_method,
-        results_dir=results_dir, save_plots=save_plots, verbose=verbose
-    )
-    results["yager"] = {
-        "accuracy": accuracy_yager,
-        "precision_macro": metrics_yager.loc["Macro Avg", "Precision"],
-        "recall_macro": metrics_yager.loc["Macro Avg", "Recall"],
-        "f1_macro": metrics_yager.loc["Macro Avg", "F1-Score"]
-    }
-    
-    if verbose:
-        print("\n=== Testing PCR5 combination rule ===")
-    accuracy_pcr5, metrics_pcr5 = run_experiment(
-        dataset_path, recording_id, num_frames, frame_step,
-        combination_rule="pcr5", decision_method=decision_method,
-        results_dir=results_dir, save_plots=save_plots, verbose=verbose
-    )
-    results["pcr5"] = {
-        "accuracy": accuracy_pcr5,
-        "precision_macro": metrics_pcr5.loc["Macro Avg", "Precision"],
-        "recall_macro": metrics_pcr5.loc["Macro Avg", "Recall"],
-        "f1_macro": metrics_pcr5.loc["Macro Avg", "F1-Score"]
-    }
-    
-    # Create comparison table
-    comparison_df = pd.DataFrame({
-        "dempster": [
-            results["dempster"]["accuracy"],
-            results["dempster"]["precision_macro"],
-            results["dempster"]["recall_macro"],
-            results["dempster"]["f1_macro"]
-        ],
-        "yager": [
-            results["yager"]["accuracy"],
-            results["yager"]["precision_macro"],
-            results["yager"]["recall_macro"],
-            results["yager"]["f1_macro"]
-        ],
-        "pcr5": [
-            results["pcr5"]["accuracy"],
-            results["pcr5"]["precision_macro"],
-            results["pcr5"]["recall_macro"],
-            results["pcr5"]["f1_macro"]
-        ]
-    }, index=["Accuracy", "Precision (Macro Avg)", "Recall (Macro Avg)", "F1-Score (Macro Avg)"])
-    
-    # Save comparison table
-    comparison_df.to_csv(os.path.join(results_dir, "combination_rules_comparison.csv"))
-    
-    # Create comparison plot
-    plt.figure(figsize=(10, 6))
-    comparison_df.plot(kind="bar", rot=0)
-    plt.title("Comparison of Combination Rules")
-    plt.ylabel("Score")
-    plt.ylim(0, 1.1)
-    plt.grid(axis="y", linestyle="--", alpha=0.7)
-    plt.tight_layout()
-    plt.savefig(os.path.join(results_dir, "combination_rules_comparison.png"))
-    plt.close()
-    
-    if verbose:
-        print("\n=== Comparison of Combination Rules ===")
-        print(comparison_df)
-        print(f"Results saved to {results_dir}")
-
+    end_run_time = time.time()
+    print(f"\nTotal execution time: {end_run_time - start_time:.2f} seconds")
 
 if __name__ == "__main__":
-    # Parse command-line arguments
-    parser = argparse.ArgumentParser(description="Run Dempster-Shafer sensor fusion experiment")
-    parser.add_argument("--dataset_path", type=str, default="/home/godwin/Downloads/sensor_fusion_dst_package_v1.1/sensor_fusion_dst/inD-dataset-v1.1",
-                       help="Path to the inD dataset directory")
-    parser.add_argument("--recording_id", type=int, default=1,
-                       help="ID of the recording to process")
-    parser.add_argument("--num_frames", type=int, default=50,
-                       help="Number of frames to process")
-    parser.add_argument("--frame_step", type=int, default=10,
-                       help="Step size for frame processing")
-    parser.add_argument("--decision_method", type=str, default="max_pignistic",
-                       choices=["max_bel", "max_pl", "max_pignistic"],
-                       help="Decision method")
-    parser.add_argument("--results_dir", type=str, default="/home/godwin/Downloads/sensor_fusion_dst_package_v1.1/results",
-                       help="Directory to save results")
-    parser.add_argument("--no_plots", action="store_true",
-                       help="Disable saving plots")
-    parser.add_argument("--quiet", action="store_true",
-                       help="Disable verbose output")
-    
+    parser = argparse.ArgumentParser(description="Run sensor fusion experiment using Dempster-Shafer theory on the inD dataset.")
+    parser.add_argument("--dataset_path", type=str, default=DEFAULT_DATASET_PATH, help=f"Path to the root directory of the inD dataset (default: {DEFAULT_DATASET_PATH}). Also checks config.ini.")
+    parser.add_argument("--recording_id", type=int, default=1, help="The ID of the recording to process (e.g., 1, 2, ... default: 1).")
+    parser.add_argument("--num_frames", type=int, default=50, help="Number of frames to process from the start of the recording (default: 50).")
+    parser.add_argument("--frame_step", type=int, default=10, help="Step size between processed frames (default: 10).")
+    parser.add_argument("--results_dir", type=str, default=DEFAULT_RESULTS_DIR, help=f"Directory to save output plots (default: {DEFAULT_RESULTS_DIR}).")
+    parser.add_argument("--plot", action="store_true", help="Generate and save plots (mass functions, belief/plausibility, metrics comparison).")
+    parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase output verbosity (use -vv for more detail).")
+    parser.add_argument("-q", "--quiet", action="store_true", help="Suppress progress bar and verbose output.")
+
     args = parser.parse_args()
-    
-    # Run comparison
-    compare_combination_rules(
-        dataset_path=args.dataset_path,
-        recording_id=args.recording_id,
-        num_frames=args.num_frames,
-        frame_step=args.frame_step,
-        decision_method=args.decision_method,
-        results_dir=args.results_dir,
-        save_plots=not args.no_plots,
-        verbose=not args.quiet
-    )
+
+    main(args)
+

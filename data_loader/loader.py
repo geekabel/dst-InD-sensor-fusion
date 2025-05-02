@@ -25,7 +25,7 @@ def load_recording_meta(data_path: str, recording_id: int) -> Optional[pd.Series
     if not os.path.exists(meta_file):
         print(f"Warning: Recording metadata file not found: {meta_file}")
         return None
-    
+
     try:
         # Read the CSV, assuming only one row of data after the header
         df = pd.read_csv(meta_file)
@@ -53,7 +53,7 @@ def load_tracks_meta(data_path: str, recording_id: int) -> Optional[pd.DataFrame
     if not os.path.exists(meta_file):
         print(f"Warning: Tracks metadata file not found: {meta_file}")
         return None
-    
+
     try:
         df = pd.read_csv(meta_file)
         # Set trackId as index for easier lookup
@@ -78,7 +78,7 @@ def load_tracks(data_path: str, recording_id: int) -> Optional[pd.DataFrame]:
     if not os.path.exists(tracks_file):
         print(f"Warning: Tracks file not found: {tracks_file}")
         return None
-    
+
     try:
         df = pd.read_csv(tracks_file)
         return df
@@ -125,13 +125,13 @@ def get_track_class(tracks_meta_df: pd.DataFrame, track_id: int) -> Optional[str
 # if __name__ == "__main__":
 #     dataset_path = "/home/ubuntu/inD_dataset/data"
 #     rec_id = 1
-# 
+#
 #     recording_info = load_recording_meta(dataset_path, rec_id)
 #     if recording_info is not None:
 #         print("Recording Meta:")
 #         print(recording_info)
 #         print("-"*20)
-# 
+#
 #     tracks_meta_info = load_tracks_meta(dataset_path, rec_id)
 #     if tracks_meta_info is not None:
 #         print("Tracks Meta (first 5 rows):")
@@ -141,7 +141,7 @@ def get_track_class(tracks_meta_df: pd.DataFrame, track_id: int) -> Optional[str
 #         track_2_class = get_track_class(tracks_meta_info, 2)
 #         print(f"Class for Track 2: {track_2_class}")
 #         print("-"*20)
-# 
+#
 #     tracks_data = load_tracks(dataset_path, rec_id)
 #     if tracks_data is not None:
 #         print("Tracks Data (first 5 rows):")
