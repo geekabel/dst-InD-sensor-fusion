@@ -3,7 +3,7 @@ import sys
 
 # Minimal test for Lanelet2 map loading
 
-# Known problematic values from recording 1 (location 4)
+#  Issue values from recording 1 (location 4)
 MAP_FILE_PATH = "/home/godwin/Downloads/sensor_fusion_dst_package_v1.1/sensor_fusion_dst/inD-dataset-v1.1/maps/lanelets/04_aseag/location4.osm"
 UTM_ORIGIN_X = 297631.3187
 UTM_ORIGIN_Y = 5629917.34465
@@ -36,20 +36,20 @@ if LANELET2_AVAILABLE:
         # This is the suspected problematic line
         origin = Origin(UTM_ORIGIN_X, UTM_ORIGIN_Y)
         print("Origin created.")
-        
+
         print("Creating UtmProjector...")
         projector = UtmProjector(origin)
         print("UtmProjector created.")
-        
+
         print(f"Loading map: {MAP_FILE_PATH}")
         lanelet_map = load(MAP_FILE_PATH, projector)
         print("Map loaded successfully!")
-        
+
     except Exception as e:
         print(f"\n--- EXCEPTION CAUGHT --- ")
         print(f"ERROR: {e}")
         print("------------------------")
-        
+
     print("\nFinal check:")
     print(f"Projector is None: {projector is None}")
     print(f"Lanelet map is None: {lanelet_map is None}")
