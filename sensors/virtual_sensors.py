@@ -3,7 +3,7 @@ Virtual sensor simulation for the inD dataset.
 
 This module provides classes to simulate different types of sensors (camera, radar, lidar, map)
 by adding realistic noise and uncertainty to the ground truth data from the inD dataset.
-Each sensor generates Basic Belief Assignments (BBAs) for the classification task.
+Each sensor generates Basic Belief Assignments (BBAs) or BPA for the classification task.
 
 Refinement:
 - MapSensor now uses actual Lanelet2 map data.
@@ -113,7 +113,7 @@ class CameraSensor(VirtualSensor):
         width = track_data["width"] # Assume size estimation is less affected by position noise
         length = track_data["length"]
 
-        # Calculate distance from camera to noisy object position
+        # Calculate distance (euclidian) from camera to noisy object position
         distance = np.sqrt((x_center_noisy - self.position[0])**2 +
                           (y_center_noisy - self.position[1])**2)
 
@@ -458,7 +458,7 @@ class MapSensor(VirtualSensor):
             "road": {"car": 0.7, "truck_bus": 0.2, "bicycle": 0.05, "pedestrian": 0.05},
             "highway": {"car": 0.8, "truck_bus": 0.2, "bicycle": 0.0, "pedestrian": 0.0},
             "bicycle_lane": {"car": 0.05, "truck_bus": 0.0, "bicycle": 0.85, "pedestrian": 0.1},
-            "sidewalk": {"car": 0.01, "truck_bus": 0.0, "bicycle": 0.1, "pedestrian": 0.89},
+            "walkway": {"car": 0.01, "truck_bus": 0.0, "bicycle": 0.1, "pedestrian": 0.89},
             "crosswalk": {"car": 0.05, "truck_bus": 0.0, "bicycle": 0.2, "pedestrian": 0.75},
             "parking": {"car": 0.8, "truck_bus": 0.1, "bicycle": 0.05, "pedestrian": 0.05},
             "unknown": {"car": 0.25, "truck_bus": 0.15, "bicycle": 0.3, "pedestrian": 0.3}
@@ -504,7 +504,8 @@ class MapSensor(VirtualSensor):
             point = BasicPoint2d(x, y)
             print(f"DEBUG (MapSensor): Created BasicPoint2d({x}, {y})") # DEBUG
 
-            # Lanelet tutorial to: https://github.com/fzi-forschungszentrum-informatik/Lanelet2/blob/master/lanelet2_examples/scripts/tutorial.py
+            # Lanelet tutorial to:
+            # https://github.com/fzi-forschungszentrum-informatik/Lanelet2/blob/master/lanelet2_examples/scripts/tutorial.py
             # Find the nearest lanelet
             # Note: findNearest requires the point in the map's coordinate frame.
             # If the map was loaded with a projector, the map elements are already in that frame.

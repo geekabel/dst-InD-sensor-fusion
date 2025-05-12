@@ -43,7 +43,8 @@ def plot_mass_function(mass_function: MassFunction, title: str = "Mass Function"
     x_pos = np.arange(len(labels))
 
     plt.figure(figsize=(max(6, len(labels) * 0.8), 4))
-    plt.bar(x_pos, masses, align='center', alpha=0.7)
+    bars = plt.bar(x_pos, masses, align='center', alpha=0.7)
+    plt.bar_label(bars, fmt='%.3f', padding=3, fontsize=8)
     plt.xticks(x_pos, labels, rotation=45, ha='right')
     plt.ylabel('Mass')
     plt.title(title)
@@ -91,14 +92,15 @@ def plot_belief_plausibility(mass_function: MassFunction,
     interval_lengths = [pl - bel for bel, pl in zip(beliefs, plausibilities)]
 
     plt.figure(figsize=(6, max(4, len(subset_labels) * 0.5)))
-    # Corrected syntax: removed backslashes before single quotes
     plt.barh(y_pos, interval_lengths, left=beliefs, height=0.6, align='center',
              color='lightblue', edgecolor='grey', label='Uncertainty [Bel, Pl]')
-    # Plot belief marker
-    plt.plot(beliefs, y_pos, '|', color='black', markersize=10, label='Belief')
-    # Plot plausibility
-    plt.plot(plausibilities, y_pos, '|', color='black', markersize=10, label='Plausibility')
+    plt.plot(beliefs, y_pos, '|', color='blue', markersize=10, label='Belief')
+    plt.plot(plausibilities, y_pos, '|', color='red', markersize=10, label='Plausibility')
 
+    # Add text labels for belief and plausibility values
+    for i, (bel, pl) in enumerate(zip(beliefs, plausibilities)):
+        plt.text(bel, y_pos[i] + 0.1, f'{bel:.3f}', va='bottom', ha='center', color='blue', fontsize=8)
+        plt.text(pl, y_pos[i] + 0.1, f'{pl:.3f}', va='bottom', ha='center', color='red', fontsize=8)
     plt.yticks(y_pos, subset_labels)
     plt.xlabel('Value')
     plt.title(title)
@@ -146,9 +148,10 @@ def plot_metrics_comparison(all_metrics: Dict[str, Dict[str, float]],
 
     for i, metric in enumerate(metric_names):
         values = [all_metrics[rule].get(metric, 0.0) for rule in rules]
-        plt.bar(index + i * bar_width, values, bar_width, label=metric.replace("_", " ").title())
+        bars = plt.bar(index + i * bar_width, values, bar_width, label=metric.replace("_", " ").title())
+        # Add value labels on top of bars
+        plt.bar_label(bars, fmt='%.3f', padding=3, fontsize=8)
 
-    # Corrected syntax: removed backslashes before single quotes
     plt.xlabel('Combination Rule')
     plt.ylabel('Score')
     plt.title('Comparison of Classification Metrics by Combination Rule')
@@ -175,4 +178,5 @@ def plot_metrics_comparison(all_metrics: Dict[str, Dict[str, float]],
 #         "pcr5": {"accuracy": 0.96, "precision_macro": 0.96, "recall_macro": 0.96, "f1_macro": 0.96}
 #     }
 #     plot_metrics_comparison(metrics_data, save_path="/home/ubuntu/metrics_comparison_plot.png")
+
 

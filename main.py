@@ -8,7 +8,12 @@ import numpy as np
 import time
 from tqdm import tqdm
 import sys
+from dotenv import load_dotenv # Import load_dotenv
 import configparser # Import configparser
+from typing import Tuple, Dict, Any, Optional, List, Set, Union
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Try importing Lanelet2
 LANELET2_AVAILABLE = False
@@ -31,7 +36,7 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(PROJECT_ROOT)
 
 # Correctly import functions from data_loader
-from data_loader.loader import load_recording_meta, load_tracks_meta, load_tracks, get_track_data_by_frame
+from data_loader.loader import load_recording_meta, load_tracks_meta, load_tracks
 from sensors.virtual_sensors import CameraSensor, RadarSensor, LidarSensor, MapSensor
 from dst_core.basic import MassFunction
 # Import individual metric functions from classification
@@ -43,33 +48,30 @@ from visualization.plotter import plot_mass_function, plot_belief_plausibility, 
 FRAME_OF_DISCERNMENT = {"car", "van", "truck_bus", "pedestrian", "bicycle"}
 
 # --- Configuration --- #
-CONFIG_FILE = os.path.join(PROJECT_ROOT, "config.ini")
+# CONFIG_FILE = os.path.join(PROJECT_ROOT, "config.ini")
 DEFAULT_DATASET_PATH = "" # Default path if not in CLI or config
-DEFAULT_RESULTS_DIR = "" # Default results path
+DEFAULT_RESULTS_PATH = "" # Default results path
 
-def get_dataset_path(cli_path):
+def get_configured_path(cli_arg_path: Union[str,None], env_var_name: str, default_path: str) -> str:
     """Determine the dataset path based on CLI, config file, and default."""
-    config = configparser.ConfigParser()
-    config_path = None
-    if os.path.exists(CONFIG_FILE):
-        try:
-            config.read(CONFIG_FILE)
-            if 'Paths' in config and 'dataset_path' in config['Paths']:
-                config_path = config['Paths']['dataset_path']
-        except configparser.Error as e:
-            print(f"Warning: Error reading config file {CONFIG_FILE}: {e}")
+    env_path = os.getenv(env_var_name)
+    # We verify if CLI argument is provide by the user
+    if cli_arg_path is not None:
+        # For results_dir, argparse default is DEFAULT_RESULTS_PATH. If cli_arg_path is this default AND env_path exists, prefer .env
+        if env_var_name == "RESULTS_PATH" and cli_arg_path == DEFAULT_DATASET_PATH and env_path:
+            print(f"Using {env_var_name} from .env file: {env_path}")
+            return env_path
+        # For dataset_path (default=None in argparse) or if results_dir was explicitly set via CLI (not the default)
+        if not (env_var_name == "RESULTS_PATH" and cli_arg_path == DEFAULT_RESULTS_PATH):
+            print(f"Using {env_var_name} from command line: {cli_arg_path}")
+            return cli_arg_path
 
-    # Priority: CLI > Config File > Default
-    if cli_path and cli_path != DEFAULT_DATASET_PATH: # If CLI path is provided and not the default
-        print(f"Using dataset path from command line: {cli_path}")
-        return cli_path
-    elif config_path:
-        print(f"Using dataset path from config file ({CONFIG_FILE}): {config_path}")
-        return config_path
-    else:
-        print(f"Using default dataset path: {DEFAULT_DATASET_PATH}")
-        return DEFAULT_DATASET_PATH
+    if env_path:
+        print(f"Using {env_var_name} from .env file: {env_path}")
+        return env_path
 
+    print(f"Using default {env_var_name}: {default_path}")
+    return default_path
 # Define helper functions for combining BBAs using different rules
 def combine_bba_list_dempster(bba_list):
     """Combine a list of BBAs using Dempster's rule."""
@@ -122,12 +124,16 @@ def main(args):
     start_time = time.time()
 
     # --- Determine Dataset Path --- #
-    dataset_path = get_dataset_path(args.dataset_path)
+    dataset_path = get_configured_path(args.dataset_path, "DATASET_PATH", DEFAULT_DATASET_PATH)
+    results_dir = get_configured_path(args.results_dir, "RESULTS_PATH", DEFAULT_RESULTS_PATH)
 
     # --- 1. Load Data --- #
     if args.verbose:
         print(f"Loading data for recording {args.recording_id} from {dataset_path}...")
 
+    if not os.path.exists(results_dir):
+        try: os.makedirs(results_dir)
+        except OSError as e: print(f"Error; Could not create rresult directory {results_dir}: {e}"); return
     try:
         # Construct data path
         data_dir = os.path.join(dataset_path, "data")
@@ -362,10 +368,10 @@ def main(args):
             'report': perf_metrics.to_string() # Store the DataFrame as string for verbose output
         }
 
-        print(f"Accuracy: {accuracy:.4f}")
-        print(f"Precision (Macro Avg): {perf_metrics.loc['Macro Avg', 'Precision']:.4f}")
-        print(f"Recall (Macro Avg): {perf_metrics.loc['Macro Avg', 'Recall']:.4f}")
-        print(f"F1-Score (Macro Avg): {perf_metrics.loc['Macro Avg', 'F1-Score']:.4f}")
+        print(f"Accuracy: {accuracy:.3f}")
+        print(f"Precision (Macro Avg): {perf_metrics.loc['Macro Avg', 'Precision']:.3f}")
+        print(f"Recall (Macro Avg): {perf_metrics.loc['Macro Avg', 'Recall']:.3f}")
+        print(f"F1-Score (Macro Avg): {perf_metrics.loc['Macro Avg', 'F1-Score']:.3f}")
         if args.verbose:
             print("Classification Report (Per Class):")
             print(perf_metrics.drop('Macro Avg').to_string())
@@ -377,20 +383,21 @@ def main(args):
             os.makedirs(args.results_dir)
         plot_metrics_comparison(all_metrics, os.path.join(args.results_dir, "combination_rules_comparison.png"))
 
-    end_run_time = time.time()
-    print(f"\nTotal execution time: {end_run_time - start_time:.2f} seconds")
+    total_time =  time.time() - start_time
+    print(f"\nTotal execution time: {total_time:.2f} seconds")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run sensor fusion experiment using Dempster-Shafer theory on the inD dataset.")
-    parser.add_argument("--dataset_path", type=str, default=DEFAULT_DATASET_PATH, help=f"Path to the root directory of the inD dataset (default: {DEFAULT_DATASET_PATH}). Also checks config.ini.")
+    parser = argparse.ArgumentParser(description="Run sensor fusion classification experiments using Dempster-Shafer Theory.")
+    parser.add_argument("--dataset_path", type=str, default=None,
+                        help=f"Path to the root directory of the inD dataset. Overrides .env. (Default via .env or: {DEFAULT_DATASET_PATH})")
+    parser.add_argument("--results_dir", type=str, default=DEFAULT_RESULTS_PATH,
+                        help=f"Directory to save output plots and CSV files. Overrides .env. (Default via .env or: {DEFAULT_RESULTS_PATH})")
     parser.add_argument("--recording_id", type=int, default=1, help="The ID of the recording to process (e.g., 1, 2, ... default: 1).")
-    parser.add_argument("--num_frames", type=int, default=50, help="Number of frames to process from the start of the recording (default: 50).")
+    parser.add_argument("--num_frames", type=int, default=50, help="Number of frames to process from the start (default: 50).")
     parser.add_argument("--frame_step", type=int, default=10, help="Step size between processed frames (default: 10).")
-    parser.add_argument("--results_dir", type=str, default=DEFAULT_RESULTS_DIR, help=f"Directory to save output plots (default: {DEFAULT_RESULTS_DIR}).")
-    parser.add_argument("--plot", action="store_true", help="Generate and save plots (mass functions, belief/plausibility, metrics comparison).")
-    parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase output verbosity (use -vv for more detail).")
-    parser.add_argument("-q", "--quiet", action="store_true", help="Suppress progress bar and verbose output.")
-
+    parser.add_argument("--plot", action="store_true", help="Generate and save plots.")
+    parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase output verbosity (e.g., -v, -vv).")
+    parser.add_argument("-q", "--quiet", action="store_true", help="Suppress progress bar and verbose output (overrides -v).")
     args = parser.parse_args()
 
     main(args)
